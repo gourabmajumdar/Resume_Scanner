@@ -1,0 +1,634 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import io
+import re
+from typing import List, Dict, Tuple
+from datetime import datetime
+import plotly.express as px
+import plotly.graph_objects as go
+
+# Document processing imports
+try:
+    import PyPDF2
+except ImportError:
+    st.error("Please install PyPDF2: pip install PyPDF2")
+
+try:
+    from docx import Document
+except ImportError:
+    st.error("Please install python-docx: pip install python-docx")
+
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+except ImportError:
+    st.error("Please install scikit-learn: pip install scikit-learn")
+
+try:
+    from fuzzywuzzy import fuzz, process
+except ImportError:
+    st.error("Please install fuzzywuzzy: pip install fuzzywuzzy python-Levenshtein")
+
+class EnhancedResumeAnalyzer:
+    def __init__(self):
+        self.job_keywords = []
+        self.job_description = ""
+        self.education_keywords = [
+            'bachelor', 'master', 'phd', 'doctorate', 'degree', 'diploma', 'certificate',
+            'bs', 'ba', 'ms', 'ma', 'mba', 'computer science', 'engineering', 
+            'information technology', 'software engineering', 'data science',
+            'mathematics', 'statistics', 'physics', 'chemistry', 'biology'
+        ]
+        
+    def extract_text_from_pdf(self, pdf_file) -> str:
+        """Extract text from PDF file."""
+        try:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+            return text
+        except Exception as e:
+            st.error(f"Error reading PDF: {str(e)}")
+            return ""
+    
+    def extract_text_from_docx(self, docx_file) -> str:
+        """Extract text from DOCX file."""
+        try:
+            doc = Document(docx_file)
+            text = ""
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n"
+            return text
+        except Exception as e:
+            st.error(f"Error reading DOCX: {str(e)}")
+            return ""
+    
+    def extract_text_from_file(self, uploaded_file) -> str:
+        """Extract text based on file type."""
+        file_extension = uploaded_file.name.lower().split('.')[-1]
+        
+        if file_extension == 'pdf':
+            return self.extract_text_from_pdf(uploaded_file)
+        elif file_extension in ['docx', 'doc']:
+            return self.extract_text_from_docx(uploaded_file)
+        else:
+            st.error(f"Unsupported file format: {file_extension}")
+            return ""
+    
+    def preprocess_text(self, text: str) -> str:
+        """Clean and preprocess text."""
+        text = text.lower()
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'[^a-zA-Z0-9\s\+\#\.]', ' ', text)  # Keep +, #, . for technologies
+        return text.strip()
+    
+    def extract_keywords_from_job_description(self, job_desc: str) -> List[str]:
+        """Extract important keywords from job description."""
+        stop_words = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
+            'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+            'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+            'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these',
+            'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him',
+            'her', 'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 'their',
+            'required', 'experience', 'years', 'work', 'working', 'knowledge'
+        }
+        
+        processed_text = self.preprocess_text(job_desc)
+        words = processed_text.split()
+        
+        keywords = [word for word in words if len(word) > 2 and word not in stop_words]
+        unique_keywords = list(set(keywords))
+        
+        return unique_keywords
+    
+    def extract_education_requirements(self, job_desc: str) -> List[str]:
+        """Extract education requirements from job description."""
+        job_desc_lower = job_desc.lower()
+        found_education = []
+        
+        for edu_keyword in self.education_keywords:
+            if edu_keyword in job_desc_lower:
+                found_education.append(edu_keyword)
+        
+        # Look for specific degree patterns
+        degree_patterns = [
+            r'bachelor[\'s]*\s+(?:degree\s+)?(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'master[\'s]*\s+(?:degree\s+)?(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'phd\s+(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'bs\s+(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'ms\s+(?:in\s+)?(\w+(?:\s+\w+)*)',
+        ]
+        
+        for pattern in degree_patterns:
+            matches = re.findall(pattern, job_desc_lower)
+            found_education.extend(matches)
+        
+        return list(set(found_education))
+    
+    def extract_education_from_resume(self, resume_text: str) -> List[str]:
+        """Extract education information from resume."""
+        resume_lower = resume_text.lower()
+        found_education = []
+        
+        for edu_keyword in self.education_keywords:
+            if edu_keyword in resume_lower:
+                found_education.append(edu_keyword)
+        
+        # Look for specific degree patterns
+        degree_patterns = [
+            r'bachelor[\'s]*\s+(?:degree\s+)?(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'master[\'s]*\s+(?:degree\s+)?(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'phd\s+(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'bs\s+(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'ms\s+(?:in\s+)?(\w+(?:\s+\w+)*)',
+            r'mba',
+            r'certificate\s+(?:in\s+)?(\w+(?:\s+\w+)*)',
+        ]
+        
+        for pattern in degree_patterns:
+            matches = re.findall(pattern, resume_lower)
+            found_education.extend(matches)
+        
+        return list(set(found_education))
+    
+    def calculate_weighted_keyword_score(self, resume_text: str, weighted_keywords: Dict[str, float]) -> Tuple[float, Dict]:
+        """Calculate weighted keyword matching score."""
+        resume_text = self.preprocess_text(resume_text)
+        
+        total_weight = 0
+        matched_weight = 0
+        keyword_details = {}
+        
+        for keyword, weight in weighted_keywords.items():
+            total_weight += weight
+            
+            # Use fuzzy matching for better keyword detection
+            found = self.fuzzy_keyword_match(keyword, resume_text)
+            keyword_details[keyword] = {
+                'weight': weight,
+                'found': found,
+                'match_score': found['score'] if found else 0
+            }
+            
+            if found and found['score'] > 80:  # 80% fuzzy match threshold
+                matched_weight += weight
+        
+        if total_weight == 0:
+            return 0.0, keyword_details
+        
+        score = (matched_weight / total_weight) * 100
+        return score, keyword_details
+    
+    def fuzzy_keyword_match(self, keyword: str, text: str, threshold: int = 80) -> Dict:
+        """Find fuzzy matches for keywords in text."""
+        keyword = keyword.lower().strip()
+        words = text.split()
+        
+        # Check for exact match first
+        if keyword in text:
+            return {'matched_text': keyword, 'score': 100}
+        
+        # For multi-word keywords
+        if len(keyword.split()) > 1:
+            # Use sliding window approach
+            keyword_words = keyword.split()
+            window_size = len(keyword_words)
+            
+            for i in range(len(words) - window_size + 1):
+                window = ' '.join(words[i:i + window_size])
+                score = fuzz.ratio(keyword, window)
+                
+                if score >= threshold:
+                    return {'matched_text': window, 'score': score}
+        
+        # Single word fuzzy matching
+        best_match = process.extractOne(keyword, words, scorer=fuzz.ratio)
+        
+        if best_match and best_match[1] >= threshold:
+            return {'matched_text': best_match[0], 'score': best_match[1]}
+        
+        return None
+    
+    def calculate_education_match_score(self, job_education: List[str], resume_education: List[str]) -> float:
+        """Calculate education matching score."""
+        if not job_education:
+            return 100.0  # No education requirements
+        
+        if not resume_education:
+            return 0.0  # No education found in resume
+        
+        matched_education = 0
+        total_education = len(job_education)
+        
+        for job_edu in job_education:
+            for resume_edu in resume_education:
+                # Use fuzzy matching for education
+                similarity = fuzz.partial_ratio(job_edu.lower(), resume_edu.lower())
+                if similarity > 70:  # 70% threshold for education matching
+                    matched_education += 1
+                    break
+        
+        return (matched_education / total_education) * 100
+    
+    def calculate_similarity_score(self, resume_text: str, job_description: str) -> float:
+        """Calculate semantic similarity using TF-IDF and cosine similarity."""
+        try:
+            resume_clean = self.preprocess_text(resume_text)
+            job_clean = self.preprocess_text(job_description)
+            
+            vectorizer = TfidfVectorizer(stop_words='english', max_features=1000)
+            tfidf_matrix = vectorizer.fit_transform([job_clean, resume_clean])
+            
+            similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+            
+            return similarity * 100
+        except Exception as e:
+            st.warning(f"Could not calculate similarity score: {str(e)}")
+            return 0.0
+    
+    def analyze_resume(self, resume_text: str, job_description: str, 
+                      weighted_keywords: Dict[str, float], 
+                      scoring_weights: Dict[str, float]) -> Dict:
+        """Perform comprehensive resume analysis with enhanced features."""
+        
+        # Extract education requirements
+        job_education = self.extract_education_requirements(job_description)
+        resume_education = self.extract_education_from_resume(resume_text)
+        
+        # Calculate different scores
+        keyword_score, keyword_details = self.calculate_weighted_keyword_score(resume_text, weighted_keywords)
+        similarity_score = self.calculate_similarity_score(resume_text, job_description)
+        education_score = self.calculate_education_match_score(job_education, resume_education)
+        
+        # Calculate overall score using custom weights
+        overall_score = (
+            keyword_score * scoring_weights.get('keywords', 0.5) +
+            similarity_score * scoring_weights.get('similarity', 0.3) +
+            education_score * scoring_weights.get('education', 0.2)
+        )
+        
+        # Determine status based on cutoff
+        cutoff = scoring_weights.get('cutoff', 90)
+        status = "Selected" if overall_score >= cutoff else "Rejected"
+        
+        return {
+            'keyword_score': round(keyword_score, 2),
+            'similarity_score': round(similarity_score, 2),
+            'education_score': round(education_score, 2),
+            'overall_score': round(overall_score, 2),
+            'status': status,
+            'keyword_details': keyword_details,
+            'job_education': job_education,
+            'resume_education': resume_education
+        }
+
+def main():
+    st.set_page_config(
+        page_title="Enhanced Resume Screening Tool",
+        page_icon="🎯",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # Custom CSS
+    st.markdown("""
+    <style>
+    .main-header {
+        font-size: 3rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .score-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+    }
+    .selected {
+        background-color: #d4edda;
+        border-left: 5px solid #28a745;
+    }
+    .rejected {
+        background-color: #f8d7da;
+        border-left: 5px solid #dc3545;
+    }
+    .keyword-match {
+        background-color: #e7f3ff;
+        padding: 0.2rem 0.5rem;
+        border-radius: 5px;
+        margin: 0.1rem;
+        display: inline-block;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('<h1 class="main-header">🎯 Enhanced AI Resume Screening Tool</h1>', unsafe_allow_html=True)
+    
+    analyzer = EnhancedResumeAnalyzer()
+    
+    # Sidebar for configuration
+    st.sidebar.header("📋 Job Configuration")
+    
+    job_title = st.sidebar.text_input("Job Title", placeholder="e.g., Senior Software Engineer")
+    
+    job_description = st.sidebar.text_area(
+        "Job Description",
+        height=200,
+        placeholder="Paste the complete job description here...",
+        help="Include required skills, experience, qualifications, education requirements, etc."
+    )
+    
+    # Weighted Keywords Section
+    st.sidebar.subheader("⚖️ Weighted Keywords")
+    st.sidebar.write("Add keywords with importance weights (1-10)")
+    
+    # Initialize session state for keywords
+    if 'weighted_keywords' not in st.session_state:
+        st.session_state.weighted_keywords = {}
+    
+    # Add new keyword
+    col1, col2 = st.sidebar.columns([2, 1])
+    with col1:
+        new_keyword = st.text_input("Keyword", key="new_keyword")
+    with col2:
+        keyword_weight = st.number_input("Weight", min_value=1, max_value=10, value=5, key="keyword_weight")
+    
+    if st.sidebar.button("Add Keyword"):
+        if new_keyword.strip():
+            st.session_state.weighted_keywords[new_keyword.strip().lower()] = keyword_weight
+            st.rerun()
+    
+    # Display current keywords
+    if st.session_state.weighted_keywords:
+        st.sidebar.write("**Current Keywords:**")
+        for keyword, weight in st.session_state.weighted_keywords.items():
+            col1, col2 = st.sidebar.columns([3, 1])
+            with col1:
+                st.write(f"• {keyword} (weight: {weight})")
+            with col2:
+                if st.button("❌", key=f"remove_{keyword}"):
+                    del st.session_state.weighted_keywords[keyword]
+                    st.rerun()
+    
+    # Scoring Configuration
+    st.sidebar.subheader("📊 Scoring Configuration")
+    
+    keyword_weight = st.sidebar.slider("Keywords Weight", 0.0, 1.0, 0.5, 0.1)
+    similarity_weight = st.sidebar.slider("Similarity Weight", 0.0, 1.0, 0.3, 0.1)
+    education_weight = st.sidebar.slider("Education Weight", 0.0, 1.0, 0.2, 0.1)
+    
+    # Normalize weights
+    total_weight = keyword_weight + similarity_weight + education_weight
+    if total_weight > 0:
+        keyword_weight /= total_weight
+        similarity_weight /= total_weight
+        education_weight /= total_weight
+    
+    cutoff_score = st.sidebar.slider("Selection Cutoff (%)", 70, 100, 90, 5)
+    
+    scoring_weights = {
+        'keywords': keyword_weight,
+        'similarity': similarity_weight,
+        'education': education_weight,
+        'cutoff': cutoff_score
+    }
+    
+    # Main content area
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.header("📁 Upload Resumes")
+        uploaded_files = st.file_uploader(
+            "Choose resume files",
+            type=['pdf', 'docx', 'doc'],
+            accept_multiple_files=True,
+            help="Upload multiple resume files in PDF or Word format"
+        )
+        
+        if st.button("🔍 Analyze Resumes", type="primary", use_container_width=True):
+            if not job_description.strip():
+                st.error("Please enter a job description first!")
+                return
+            
+            if not uploaded_files:
+                st.error("Please upload at least one resume!")
+                return
+            
+            if not st.session_state.weighted_keywords:
+                st.warning("No weighted keywords defined. Using auto-extracted keywords with equal weights.")
+                # Auto-extract keywords if none provided
+                auto_keywords = analyzer.extract_keywords_from_job_description(job_description)
+                weighted_keywords = {keyword: 5 for keyword in auto_keywords[:10]}  # Top 10 keywords
+            else:
+                weighted_keywords = st.session_state.weighted_keywords
+            
+            st.success(f"Using {len(weighted_keywords)} weighted keywords for analysis")
+            
+            # Initialize results
+            results = []
+            
+            # Progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Analyze each resume
+            for i, uploaded_file in enumerate(uploaded_files):
+                status_text.text(f"Analyzing {uploaded_file.name}...")
+                
+                # Extract text from resume
+                resume_text = analyzer.extract_text_from_file(uploaded_file)
+                
+                if resume_text:
+                    # Analyze resume
+                    analysis = analyzer.analyze_resume(
+                        resume_text, job_description, weighted_keywords, scoring_weights
+                    )
+                    
+                    results.append({
+                        'filename': uploaded_file.name,
+                        'keyword_score': analysis['keyword_score'],
+                        'similarity_score': analysis['similarity_score'],
+                        'education_score': analysis['education_score'],
+                        'overall_score': analysis['overall_score'],
+                        'status': analysis['status'],
+                        'keyword_details': analysis['keyword_details'],
+                        'job_education': analysis['job_education'],
+                        'resume_education': analysis['resume_education']
+                    })
+                
+                # Update progress
+                progress_bar.progress((i + 1) / len(uploaded_files))
+            
+            status_text.text("Analysis complete!")
+            
+            # Display results
+            if results:
+                st.header("📊 Enhanced Analysis Results")
+                
+                # Create DataFrame
+                df = pd.DataFrame([
+                    {
+                        'filename': r['filename'],
+                        'keyword_score': r['keyword_score'],
+                        'similarity_score': r['similarity_score'],
+                        'education_score': r['education_score'],
+                        'overall_score': r['overall_score'],
+                        'status': r['status']
+                    } for r in results
+                ])
+                
+                # Summary statistics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Total Resumes", len(df))
+                
+                with col2:
+                    selected_count = len(df[df['status'] == 'Selected'])
+                    st.metric("Selected", selected_count)
+                
+                with col3:
+                    rejected_count = len(df[df['status'] == 'Rejected'])
+                    st.metric("Rejected", rejected_count)
+                
+                with col4:
+                    avg_score = df['overall_score'].mean()
+                    st.metric("Avg Score", f"{avg_score:.1f}%")
+                
+                # Enhanced Visualization
+                st.subheader("📈 Detailed Score Breakdown")
+                
+                # Stacked bar chart
+                fig = go.Figure(data=[
+                    go.Bar(name='Keywords', x=df['filename'], y=df['keyword_score'] * scoring_weights['keywords']),
+                    go.Bar(name='Similarity', x=df['filename'], y=df['similarity_score'] * scoring_weights['similarity']),
+                    go.Bar(name='Education', x=df['filename'], y=df['education_score'] * scoring_weights['education'])
+                ])
+                
+                fig.update_layout(
+                    barmode='stack',
+                    title='Score Components by Resume',
+                    xaxis_tickangle=-45,
+                    yaxis_title='Weighted Score'
+                )
+                
+                # Add cutoff line
+                fig.add_hline(y=cutoff_score, line_dash="dash", line_color="red", 
+                             annotation_text=f"Cutoff: {cutoff_score}%")
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Detailed results with keyword analysis
+                st.subheader("📋 Detailed Results")
+                
+                # Sort by overall score (descending)
+                df_sorted = df.sort_values('overall_score', ascending=False)
+                
+                for idx, (_, row) in enumerate(df_sorted.iterrows()):
+                    result_detail = results[idx]
+                    status_class = "selected" if row['status'] == 'Selected' else "rejected"
+                    
+                    with st.expander(f"{row['filename']} - {row['overall_score']}% ({row['status']})"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown(f"""
+                            **Overall Score:** {row['overall_score']}%  
+                            **Status:** {row['status']}  
+                            
+                            **Score Breakdown:**
+                            - Keywords: {row['keyword_score']}% (weight: {scoring_weights['keywords']:.1%})
+                            - Similarity: {row['similarity_score']}% (weight: {scoring_weights['similarity']:.1%})
+                            - Education: {row['education_score']}% (weight: {scoring_weights['education']:.1%})
+                            """)
+                        
+                        with col2:
+                            st.markdown("**Keyword Matching Details:**")
+                            for keyword, details in result_detail['keyword_details'].items():
+                                if details['found']:
+                                    match_info = details['found']
+                                    st.markdown(f"""
+                                    <div class="keyword-match">
+                                        ✅ <strong>{keyword}</strong> (weight: {details['weight']})  
+                                        Found: "{match_info['matched_text']}" ({match_info['score']}% match)
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                else:
+                                    st.markdown(f"❌ **{keyword}** (weight: {details['weight']}) - Not found")
+                        
+                        # Education matching
+                        if result_detail['job_education'] or result_detail['resume_education']:
+                            st.markdown("**Education Analysis:**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write("Job Requirements:", result_detail['job_education'])
+                            with col2:
+                                st.write("Resume Education:", result_detail['resume_education'])
+                
+                # Download enhanced results
+                enhanced_csv = df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Enhanced Results as CSV",
+                    data=enhanced_csv,
+                    file_name=f"enhanced_resume_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+    
+    with col2:
+        st.header("ℹ️ Enhanced Features")
+        st.markdown("""
+        ### 🆕 **New Improvements:**
+        
+        **1. Weighted Keywords**
+        - Assign importance weights (1-10) to keywords
+        - Critical skills get higher priority
+        - Flexible keyword management
+        
+        **2. Fuzzy Matching**
+        - Handles typos and variations
+        - "JavaScript" matches "JS", "javascript"
+        - 80% similarity threshold
+        
+        **3. Education Matching**
+        - Extracts degree requirements
+        - Matches education background
+        - Supports various formats
+        
+        **4. Custom Scoring Weights**
+        - Adjust importance of each component
+        - Keywords, Similarity, Education
+        - Flexible cutoff threshold
+        
+        ### 📊 **Scoring Components:**
+        
+        **Keywords Score:** Weighted keyword matching with fuzzy logic  
+        **Similarity Score:** Semantic text similarity  
+        **Education Score:** Educational background matching  
+        
+        **Final Score:** Weighted combination based on your preferences
+        """)
+        
+        if job_description:
+            st.subheader("🎓 Education Requirements")
+            education_reqs = analyzer.extract_education_requirements(job_description)
+            if education_reqs:
+                st.write("Detected education requirements:")
+                for edu in education_reqs[:5]:
+                    st.write(f"• {edu}")
+            else:
+                st.write("No specific education requirements found")
+        
+        # Display current scoring configuration
+        st.subheader("⚖️ Current Scoring Config")
+        st.write(f"Keywords: {scoring_weights['keywords']:.1%}")
+        st.write(f"Similarity: {scoring_weights['similarity']:.1%}")
+        st.write(f"Education: {scoring_weights['education']:.1%}")
+        st.write(f"Cutoff: {scoring_weights['cutoff']}%")
+
+if __name__ == "__main__":
+    main()
