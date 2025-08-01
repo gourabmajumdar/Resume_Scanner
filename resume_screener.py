@@ -137,7 +137,7 @@ class ComprehensiveResumeAnalyzer:
             # Mobile development
             r'\b(android|ios|react native|flutter|swift|kotlin|xamarin)\b': 8,
             # Testing
-            r'\b(junit|pytest|selenium|cypress|jest|testing|qa|A/B testing|quality assurance)\b': 6,
+            r'\b(junit|pytest|selenium|playwright|cypress|jest|testing|qa|A/B testing|bdd|cucumber|mocha|jasmine|postman|rest|soap|restful|rest api|restful api|jmeter|loadrunner|automation|manual testing|regression testing|smoke testing|unit testing|quality assurance)\b': 8,
         }
         
         # Experience level patterns (high weight)
@@ -318,8 +318,98 @@ class ComprehensiveResumeAnalyzer:
         
         return None
     
+    def fuzzy_keyword_match_with_frequency(self, keyword: str, text: str, threshold: int = 80) -> Dict:
+        """Find fuzzy matches with frequency counting for keywords in text."""
+        keyword = keyword.lower().strip()
+        words = text.split()
+        
+        matches = []
+        match_scores = []
+        
+        # Check for exact matches first
+        exact_count = text.lower().count(keyword.lower())
+        if exact_count > 0:
+            return {
+                'found': {'matched_text': keyword, 'score': 100},
+                'frequency': exact_count,
+                'score': 100
+            }
+        
+        # Handle common abbreviations and variations
+        abbreviations = {
+            'javascript': ['js', 'javascript', 'java script'],
+            'machine learning': ['ml', 'machine learning', 'machine-learning'],
+            'artificial intelligence': ['ai', 'artificial intelligence'],
+            'react.js': ['react', 'reactjs', 'react js'],
+            'node.js': ['node', 'nodejs', 'node js'],
+            'postgresql': ['postgres', 'postgresql', 'postgre'],
+            'mongodb': ['mongo', 'mongodb', 'mongo db'],
+        }
+        
+        # Check abbreviations with frequency
+        for full_term, variants in abbreviations.items():
+            if keyword in variants or any(variant in keyword for variant in variants):
+                total_frequency = 0
+                best_match = None
+                for variant in variants:
+                    variant_count = text.lower().count(variant.lower())
+                    if variant_count > 0:
+                        total_frequency += variant_count
+                        if not best_match:
+                            best_match = {'matched_text': variant, 'score': 95}
+                
+                if total_frequency > 0:
+                    return {
+                        'found': best_match,
+                        'frequency': total_frequency,
+                        'score': 95
+                    }
+        
+        # For multi-word keywords, use sliding window approach
+        if len(keyword.split()) > 1:
+            keyword_words = keyword.split()
+            window_size = len(keyword_words)
+            frequency = 0
+            best_match = None
+            
+            for i in range(len(words) - window_size + 1):
+                window = ' '.join(words[i:i + window_size])
+                score = fuzz.ratio(keyword, window)
+                
+                if score >= threshold:
+                    frequency += 1
+                    if not best_match or score > best_match['score']:
+                        best_match = {'matched_text': window, 'score': score}
+            
+            if frequency > 0:
+                return {
+                    'found': best_match,
+                    'frequency': frequency,
+                    'score': best_match['score']
+                }
+        
+        # Single word fuzzy matching with frequency
+        word_matches = []
+        for word in words:
+            score = fuzz.ratio(keyword, word)
+            if score >= threshold:
+                word_matches.append((word, score))
+        
+        if word_matches:
+            # Get the best match and count similar matches
+            best_word, best_score = max(word_matches, key=lambda x: x[1])
+            frequency = len([w for w, s in word_matches if s >= threshold * 0.9])  # Count matches within 90% of threshold
+            
+            return {
+                'found': {'matched_text': best_word, 'score': best_score},
+                'frequency': frequency,
+                'score': best_score
+            }
+        
+        return None
+
     def calculate_weighted_keyword_score(self, resume_text: str, weighted_keywords: Dict[str, float]) -> Tuple[float, Dict]:
-        """Calculate weighted keyword matching score with detailed breakdown."""
+        """Calculate weighted keyword matching score with frequency requirements for important keywords.""" 
         resume_text = self.preprocess_text(resume_text)
         
         total_weight = 0
@@ -329,32 +419,53 @@ class ComprehensiveResumeAnalyzer:
         for keyword, weight in weighted_keywords.items():
             total_weight += weight
             
-            # Use fuzzy matching for better keyword detection
-            found = self.fuzzy_keyword_match(keyword, resume_text)
-            #print(f"Keyword: {keyword} | Found: {found is not None} | Score: {found['score'] if found else 0}")  # DEBUG LINE
+            # Use enhanced fuzzy matching with frequency counting
+            found_results = self.fuzzy_keyword_match_with_frequency(keyword, resume_text)
+            print(f"DEBUG: {keyword} -> frequency: {found_results['frequency'] if found_results else 'None'}")
+
             keyword_details[keyword] = {
                 'weight': weight,
-                'found': found,
-                'match_score': found['score'] if found else 0,
+                'found': found_results['found'] if found_results else None,
+                'match_score': found_results['score'] if found_results else 0,
+                'frequency': found_results['frequency'] if found_results else 0,
                 'contributed_weight': 0
             }
             
-            if found and found['score'] > 50:  # Slightly higher threshold
-                if found['score'] >= 70:
-                    contribution = weight  # Full weight
-                elif found['score'] >= 60:
-                    contribution = weight * 0.95  # 95% weight
+            if found_results and found_results['score'] > 50:
+                frequency = found_results['frequency']
+                
+                # Enhanced scoring logic with stricter frequency requirements
+                if weight >= 6:  # High-importance keywords need multiple mentions
+                    if frequency > 3:
+                        frequency_multiplier = 1.0   # 100% credit for 4+ mentions
+                    elif frequency == 3:
+                        frequency_multiplier = 0.75  # 75% credit for 3 mentions
+                    elif frequency == 2:
+                        frequency_multiplier = 0.5   # 50% credit for 2 mentions
+                    else:  # frequency == 1
+                        frequency_multiplier = 0.25  # 25% credit for single mention
+                else:  # Regular keywords - single mention is fine
+                    frequency_multiplier = 1.0
+                
+                # Base contribution based on fuzzy match quality
+                if found_results['score'] >= 70:
+                    base_contribution = weight  # Full weight
+                elif found_results['score'] >= 60:
+                    base_contribution = weight * 0.95  # 95% weight
                 else:
-                    contribution = weight * 0.9   # 90% weight
+                    base_contribution = weight * 0.9   # 90% weight
+                
+                # Apply frequency multiplier
+                contribution = base_contribution * frequency_multiplier
                 matched_weight += contribution
                 keyword_details[keyword]['contributed_weight'] = contribution
-        
+                keyword_details[keyword]['frequency_multiplier'] = frequency_multiplier
+    
         if total_weight == 0:
             return 0.0, keyword_details
         
         score = (matched_weight / total_weight) * 100
         return score, keyword_details
-    
 
     def calculate_education_match_score(self, job_education: List[str], resume_education: List[str]) -> float:
         """Calculate education matching score with improved logic."""
@@ -623,7 +734,50 @@ def main():
                 with col2_preview:
                     st.write(f"**Manual keywords:** {len(st.session_state.weighted_keywords)}")
                     st.write(f"**Total keywords for analysis:** {len(comprehensive_keywords)}")
-        
+                
+                # NEW SECTION: Show all keywords that will be used
+                st.markdown("---")
+                st.markdown("#### 📋 **Complete Keyword List for Analysis**")
+                
+                # Categorize keywords by weight
+                high_weight_keywords = []
+                medium_weight_keywords = []
+                low_weight_keywords = []
+                
+                for keyword, weight in comprehensive_keywords.items():
+                    if weight >= 7:
+                        high_weight_keywords.append((keyword, weight))
+                    elif weight >= 4:
+                        medium_weight_keywords.append((keyword, weight))
+                    else:
+                        low_weight_keywords.append((keyword, weight))
+                
+                # Display keywords by category
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if high_weight_keywords:
+                        st.markdown("**🔥 High Priority (7-10)**")
+                        for keyword, weight in sorted(high_weight_keywords, key=lambda x: x[1], reverse=True):
+                            st.write(f"• **{keyword}** ({weight})")
+                
+                with col2:
+                    if medium_weight_keywords:
+                        st.markdown("**⚖️ Medium Priority (4-6)**")
+                        for keyword, weight in sorted(medium_weight_keywords, key=lambda x: x[1], reverse=True):
+                            st.write(f"• {keyword} ({weight})")
+                
+                with col3:
+                    if low_weight_keywords:
+                        st.markdown("**📝 Low Priority (2-3)**")
+                        for keyword, weight in sorted(low_weight_keywords, key=lambda x: x[1], reverse=True):
+                            st.write(f"• {keyword} ({weight})")
+                
+                # Show frequency requirements
+                high_weight_count = len(high_weight_keywords)
+                if high_weight_count > 0:
+                    st.info(f"🎯 **Frequency Requirements:** {high_weight_count} high-priority keywords require multiple mentions for full credit (4+ mentions = 100%, 3 = 75%, 2 = 50%, 1 = 25%)")
+                
         if st.button("🔍 Analyze Resumes", type="primary", use_container_width=True):
             if not job_description.strip():
                 st.error("Please enter a job description first!")
@@ -834,7 +988,9 @@ def main():
                                     <div class="keyword-found">
                                         ✅ <strong>{keyword}</strong> (weight: {details['weight']})  
                                         <br>Found: "{match_info['matched_text']}" ({match_info['score']}% match)
-                                        <br>Contribution: {details['contributed_weight']:.1f}
+                                        <br>Frequency: {details['frequency']} mention{'s' if details['frequency'] != 1 else ''}
+                                        {f"<br><span style='color: {'green' if details.get('frequency_multiplier', 1.0) == 1.0 else 'orange'};'>Frequency multiplier: {details.get('frequency_multiplier', 1.0):.0%}</span>" if details['weight'] >= 6 else ""}
+                                        <br>Final contribution: {details['contributed_weight']:.1f} points
                                     </div>
                                     """, unsafe_allow_html=True)
                             else:

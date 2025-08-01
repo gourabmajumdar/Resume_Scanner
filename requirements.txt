@@ -4,12 +4,6 @@ numpy
 plotly
 scikit-learn
 PyPDF2
-python-docxstreamlit
-pandas
-numpy
-plotly
-scikit-learn
-PyPDF2
 python-docx
 fuzzywuzzy
 python-Levenshtein
