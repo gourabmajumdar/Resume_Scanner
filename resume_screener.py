@@ -129,13 +129,15 @@ class ComprehensiveResumeAnalyzer:
             # Cloud platforms
             r'\b(aws|azure|gcp|google cloud|amazon web services|snowflake|microsoft azure)\b': 8,
             # DevOps tools
-            r'\b(docker|kubernetes|jenkins|gitlab|github|terraform|ansible)\b': 7,
+            r'\b(docker|kubernetes|jenkins|gitlab|github|terraform|gitops|maven|ant|ansible)\b': 7,
             # Data Analyst
             r'\b(power bi|tableau|excel|powerpoint|word)\b': 9,
             # Data science/ML
             r'\b(machine learning|ml|ai|artificial intelligence|predictive modeling|deep learning|tensorflow|pytorch|pandas|numpy|scikit-learn)\b': 9,
             # Mobile development
             r'\b(android|ios|react native|flutter|swift|kotlin|xamarin)\b': 8,
+            # Release Management
+            r'\b(puppet|ansible|chef|salt|release management|build|scrum|sprint|release|release management|build master|ansible)\b': 9,
             # Testing
             r'\b(junit|pytest|selenium|playwright|cypress|jest|testing|qa|A/B testing|bdd|cucumber|mocha|jasmine|postman|rest|soap|restful|rest api|restful api|jmeter|loadrunner|automation|manual testing|regression testing|smoke testing|unit testing|quality assurance)\b': 8,
         }
